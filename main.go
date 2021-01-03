@@ -1,46 +1,110 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
-	"strings"
+	"sync"
 
+	"github.com/easen/deezer-to-spotify/deezer"
+	"github.com/easen/deezer-to-spotify/spotify"
 	"github.com/easen/godeezer"
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/zmb3/spotify"
 )
 
 // redirectURI is the OAuth redirect URI for the application.
 // You must register an application at Spotify's developer portal
 // and enter this value.
-const redirectURI = "http://localhost:8080/callback"
 
 var (
-	spotifyAuthState    = "abc123"
 	deezerAccessToken   = os.Getenv("DEEZER_ACCESS_TOKEN")
 	spotifyTargetMarket = os.Getenv("SPOTIFY_TARGET_MARKET")
 	stripBracketsRegexp = regexp.MustCompile(`(\(.*\))`)
 )
 
 func main() {
-	spotifyClient := getSpotifyUserClient()
-	// use the client to make calls that require authorization
-	user, err := spotifyClient.CurrentUser()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("You are logged in as:", user.ID)
+	// Context
+	ctx, cancelFn := context.WithCancel(context.Background())
 
+	// Quit gracefully
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt)
+	wg := sync.WaitGroup{}
+
+	go func() {
+		wg.Add(1)
+		defer wg.Done()
+		<-quit
+		log.Println("Exit...")
+		cancelFn()
+	}()
+
+	// Deezer
+	d := deezer.NewDeezer(
+		ctx,
+		"http://localhost:8081/callback",
+		&wg,
+		os.Getenv("DEEZER_CLIENT_ID"),
+		os.Getenv("DEEZER_SECRET_KEY"),
+	)
+	d.GetDeezerUserClient()
+	// wait for auth to complete
+	oauthToken, ok := <-d.TokenChannel
+	var accessToken string
+	if ok && oauthToken != nil {
+		log.Println("Auth ok !")
+		accessToken = oauthToken.AccessToken
+		fmt.Println("You are logged in as:", accessToken)
+		tracks, err := godeezer.GetUserFavoriteTracks(accessToken)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		_ = tracks
+	}
+
+	return
+	// Spotify
+	spot := spotify.NewSpotify(
+		ctx,
+		"http://localhost:8080/callback",
+		&wg,
+		os.Getenv("SPOTIFY_CLIENT_ID"),
+		os.Getenv("SPOTIFY_SECRET_KEY"),
+	)
+
+	spot.GetSpotifyUserClient()
+
+	// wait for auth to complete
+	spotifyClient, ok := <-spot.ClientChannel
+
+	if ok {
+		log.Println("Auth ok !")
+		user, err := spotifyClient.CurrentUser()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("You are logged in as:", user.ID)
+	}
+
+	// Wait for quit
+	close(quit)
+	wg.Wait()
+	log.Println("Done.")
+
+	/* Old code
 	syncArtists(spotifyClient)
 	syncAlbums(spotifyClient)
-	syncTracks(spotifyClient)
+	syncTracks(spotifyClient)*/
 }
 
+/*
 func syncTracks(spotifyClient *spotify.Client) {
 	fmt.Println("Updating favourite tracks")
+
 	deezerFavouriteTracks, err := godeezer.GetUserFavoriteTracks(deezerAccessToken)
 	if err != nil {
 		log.Fatal("godeezer.GetUserFavoriteTracks() fatal:", err)
@@ -246,37 +310,4 @@ func syncArtists(spotifyClient *spotify.Client) {
 	fmt.Printf("Added %d artists\n", count)
 }
 
-func getSpotifyUserClient() *spotify.Client {
-
-	auth := spotify.NewAuthenticator(redirectURI, spotify.ScopeUserFollowModify, spotify.ScopeUserFollowRead, spotify.ScopeUserLibraryModify, spotify.ScopeUserLibraryRead)
-	ch := make(chan *spotify.Client)
-
-	// first start an HTTP server
-	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		tok, err := auth.Token(spotifyAuthState, r)
-		if err != nil {
-			http.Error(w, "Couldn't get token", http.StatusForbidden)
-			log.Fatal(err)
-		}
-		if st := r.FormValue("state"); st != spotifyAuthState {
-			http.NotFound(w, r)
-			log.Fatalf("State mismatch: %s != %s\n", st, spotifyAuthState)
-		}
-		// use the token to get an authenticated client
-		client := auth.NewClient(tok)
-		fmt.Fprintf(w, "Login Completed!")
-		ch <- &client
-	})
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Got request for:", r.URL.String())
-	})
-	go http.ListenAndServe(":8080", nil)
-
-	url := auth.AuthURL(spotifyAuthState)
-	fmt.Println("Please log in to Spotify by visiting the following page in your browser:", url)
-
-	// wait for auth to complete
-	client := <-ch
-
-	return client
-}
+*/
