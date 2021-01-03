@@ -29,10 +29,8 @@ func NewSpotify(
 ) *Spotify {
 	auth := spotify.NewAuthenticator(
 		redirectURI,
-		spotify.ScopeUserFollowModify,
-		spotify.ScopeUserFollowRead,
-		spotify.ScopeUserLibraryModify,
-		spotify.ScopeUserLibraryRead,
+		spotify.ScopePlaylistReadPrivate,
+		spotify.ScopePlaylistModifyPrivate,
 	)
 	auth.SetAuthInfo(clientId, secretKey)
 	spot := &Spotify{
@@ -63,6 +61,7 @@ func (s *Spotify) callbackHandler(w http.ResponseWriter, r *http.Request) {
 	// use the token to get an authenticated client
 	client := s.authenticator.NewClient(tok)
 	log.Println("Received token on handler", tok)
+	client.AutoRetry = true
 	s.ClientChannel <- &client
 }
 

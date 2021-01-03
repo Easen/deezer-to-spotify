@@ -16,3 +16,4 @@
 
 # Envvars
 .env
+*.txt
